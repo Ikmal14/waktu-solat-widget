@@ -1,0 +1,48 @@
+# Builds WaktuSolat.exe from source and publishes a GitHub Release when a version tag (vX.Y.Z) is pushed.
+# The widget checks the latest release once a week. Uses only GitHub's built-in token — no stored secrets.
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the project version
+        shell: pwsh
+        run: |
+          $v = ([xml](Get-Content WaktuSolat.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ("v$v" -ne $env:TAG) { throw "Tag $env:TAG does not match WaktuSolat.csproj version v$v" }
+
+      - name: Build
+        run: dotnet build -c Release -nologo
+
+      - name: Test
+        run: dotnet run -c Release --project tests/Tests.csproj
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = "bin/Release/net48/WaktuSolat.exe"
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          @"
+          **Download ``WaktuSolat.exe`` below**, put it somewhere permanent (e.g. ``Documents\WaktuSolat\``) and run it. Windows 10/11, no install, no admin.
+
+          Updating: right-click the tray icon → **Keluar**, replace the old exe, run it again. Settings are kept.
+
+          Built from source by GitHub Actions. SHA-256: ``$sha``
+
+          The exe isn't code-signed: if SmartScreen appears, choose **More info → Run anyway**.
+          "@ | Set-Content notes.md
+          gh release create $env:TAG $exe --title "Waktu Solat $env:TAG" --notes-file notes.md
