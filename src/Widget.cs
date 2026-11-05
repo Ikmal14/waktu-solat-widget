@@ -265,9 +265,12 @@ namespace WaktuSolat
 
         // Countdown with fixed-width digit cells so the numbers never jiggle as they change.
         readonly Dictionary<Font, SizeF> _digitCell = new Dictionary<Font, SizeF>();
+        float _digitScale;
+        static readonly StringFormat Typographic = (StringFormat)StringFormat.GenericTypographic.Clone();
         void DrawTabular(Graphics g, string text, Font f, Brush b, float x, float y, float h)
         {
-            var tf = StringFormat.GenericTypographic;
+            var tf = Typographic;
+            if (_digitScale != _scale) { _digitCell.Clear(); _digitScale = _scale; }   // re-measure after resize / DPI change
             if (!_digitCell.TryGetValue(f, out var cell))
             {
                 float max = 0;
@@ -323,6 +326,7 @@ namespace WaktuSolat
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _mouseIn = true; ForceRepaint(); }
+        protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); _mouseIn = false; _hoverEntry = null; _hoverBtn = null; }
         protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _mouseIn = false; _hoverEntry = null; _hoverBtn = null; ForceRepaint(); }
 
         protected override void OnMouseMove(MouseEventArgs e)
@@ -343,8 +347,9 @@ namespace WaktuSolat
             if (e.Button == MouseButtons.Right) { _menu.Show(this, e.Location); return; }
             if (e.Button != MouseButtons.Left) return;
             var d = ToDesign(e.Location);
-            if (_hideRect.Contains(d)) { HideRequested?.Invoke(); return; }
-            if (_locRect.Contains(d)) { if (!Locating) LocateRequested?.Invoke(); return; }
+            bool buttons = _mouseIn || Locating;   // header buttons only act while visible
+            if (buttons && _hideRect.Contains(d)) { HideRequested?.Invoke(); return; }
+            if (buttons && _locRect.Contains(d)) { if (!Locating) LocateRequested?.Invoke(); return; }
             if (_statusRect.Contains(d)) { UpdateClicked?.Invoke(); return; }
             var hit = HitEntry(e.Location);
             if (hit != null) { ToggleDone?.Invoke(hit); ForceRepaint(); return; }
@@ -391,6 +396,7 @@ namespace WaktuSolat
         readonly DateTime _expires;          // Malaysia time; closes itself when its moment has passed
         readonly DateTime _autoCloseAt;      // DateTime.MaxValue = stays until acted on (reminders)
         bool _sticky, _closing;
+        string _key;
         static readonly Font _caption = Type.Caption(), _strong = Type.BodyStrong(), _body14 = Type.Body(), _icon = Type.Icon(12);
         static readonly StringFormat _left = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
         static readonly StringFormat _center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap };
@@ -402,16 +408,21 @@ namespace WaktuSolat
 
         /// onDone = null → info toast without actions. autoCloseSeconds = 0 → stays until acted on or expired.
         /// sticky = an info toast other info toasts must not replace. Returns false if not shown.
-        public static bool Show(string title, string body, Action onDone, int autoCloseSeconds, DateTime expires, bool sticky = false)
+        public static bool Show(string title, string body, Action onDone, int autoCloseSeconds, DateTime expires, bool sticky = false, string key = null)
         {
             if (onDone == null && !sticky && _current != null && (_current._onDone != null || _current._sticky)) return false;
             _current?.Close();
-            _current = new Toast(title, body, onDone, autoCloseSeconds, expires) { _sticky = sticky };
+            _current = new Toast(title, body, onDone, autoCloseSeconds, expires) { _sticky = sticky, _key = key };
             _current.Show();
             return true;
         }
 
         public static void CloseCurrent() => _current?.Close();
+
+        public static bool IsOpen(string key) => _current != null && key != null && _current._key == key;
+
+        /// Close the popup about this waktu (e.g. it was just ticked in the widget).
+        public static void CloseFor(string key) { if (IsOpen(key)) _current.Dismiss(); }
 
         /// Re-colour an open toast after a theme change.
         public static void Restyle() { if (_current != null) { _current.BackColor = Theme.Bg; _current.Invalidate(); } }
@@ -424,6 +435,7 @@ namespace WaktuSolat
             var wa = Screen.PrimaryScreen.WorkingArea;
             _restX = wa.Right - Width - S(12);
             Location = new Point(_restX, wa.Bottom - Height - S(12));
+            if (Animations()) { Opacity = 0; Left = _restX + S(16); }   // start hidden: no flash before the fade-in
             _timer.Tick += (s, e) => Step();
         }
 
@@ -435,7 +447,7 @@ namespace WaktuSolat
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            if (Animations()) { Opacity = 0; Left = _restX + S(16); _anim.Restart(); }
+            if (Animations()) _anim.Restart();
             _timer.Start();
         }
 
@@ -524,6 +536,7 @@ namespace WaktuSolat
         protected override void OnMouseClick(MouseEventArgs e)
         {
             base.OnMouseClick(e);
+            if (e.Button != MouseButtons.Left) return;
             var d = D(e.Location);
             if (_onDone != null && _doneBtn.Contains(d)) _onDone();
             // reminders close only via a button or ✕; info toasts close on any click

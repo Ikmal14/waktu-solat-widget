@@ -824,17 +824,16 @@ namespace WaktuSolat
 
         public static bool AllowedApi(Uri u) =>
             u.Scheme == Uri.UriSchemeHttps && u.Host == "api.github.com"
-            && (u.AbsolutePath.StartsWith($"/repos/{Owner}/{Repo}/", StringComparison.OrdinalIgnoreCase)
-                || u.AbsolutePath.StartsWith("/repositories/", StringComparison.Ordinal));   // GitHub's redirect for renamed repos
+            && u.AbsolutePath.StartsWith($"/repos/{Owner}/{Repo}/", StringComparison.OrdinalIgnoreCase);
 
         /// Only a release page of this repo may ever be opened.
         public static bool SafePage(string url) =>
             url != null && url.Length < 200 && url.StartsWith(PagePrefix, StringComparison.Ordinal) && !url.Contains("..")
-            && System.Text.RegularExpressions.Regex.IsMatch(url.Substring(PagePrefix.Length), @"^[A-Za-z0-9._/\-]*$");
+            && System.Text.RegularExpressions.Regex.IsMatch(url.Substring(PagePrefix.Length), @"^[A-Za-z0-9._/\-]*\z");
 
         public static Version ParseVersion(string tag)
         {
-            var m = System.Text.RegularExpressions.Regex.Match(tag ?? "", @"^v?(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?$");
+            var m = System.Text.RegularExpressions.Regex.Match(tag ?? "", @"^v?([0-9]{1,4})\.([0-9]{1,4})(?:\.([0-9]{1,4}))?\z");
             if (!m.Success) throw new FormatException("Bad version: " + tag);
             return new Version(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : 0);
         }
@@ -857,7 +856,11 @@ namespace WaktuSolat
         public static bool Due(DateTime lastUtc, bool lastOk, DateTime nowUtc) =>
             nowUtc - lastUtc >= TimeSpan.FromDays(lastOk ? 7 : 1) || nowUtc < lastUtc;
 
-        public static Release Check() =>
-            Parse(Net.Get(ApiUrl, AllowedApi, "application/vnd.github+json", "WaktuSolat-Widget"));
+        /// null = no (stable) release published yet — GitHub answers 404 then, which is not a failure.
+        public static Release Check()
+        {
+            try { return Parse(Net.Get(ApiUrl, AllowedApi, "application/vnd.github+json", "WaktuSolat-Widget")); }
+            catch (WebException ex) when ((ex.Response as HttpWebResponse)?.StatusCode == HttpStatusCode.NotFound) { return null; }
+        }
     }
 }

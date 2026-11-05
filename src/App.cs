@@ -225,7 +225,7 @@ namespace WaktuSolat
 
             _widget = new Widget(_menu);
             _widget.HideRequested += () => SetVisible(false);
-            _widget.ToggleDone += e => { _done.Toggle(e); Tick(); };
+            _widget.ToggleDone += e => { _done.Toggle(e); if (_done.IsDone(e)) Toast.CloseFor(e.Key); Tick(); };
             _widget.LocateRequested += () => Locate(manual: true);
             _widget.UpdateClicked += OpenUpdate;
             _widget.BoundsSaved += b => { _settings.X = b.X; _settings.Y = b.Y; _settings.W = b.Width; _settings.H = b.Height; _settings.Save(); };
@@ -325,18 +325,19 @@ namespace WaktuSolat
             var started = _starts.Check(snap, now);
             if (started != null && _settings.StartNotice && !_done.IsDone(started))
             {
-                var e = started;
-                _notify.Show($"Masuk waktu {e.Name}", $"{e.At:HH:mm} · {_store.Zone.ShortName} · tamat {snap.Next.At:HH:mm}{est}",
-                             () => MarkDone(e), 0, false, Sounds.Default, e.At.AddMinutes(15), snap.Next.At);
+                var e = started; var end = snap.Next.At; string zone = _store.Zone.ShortName;
+                _notify.Show(e.Key, () => $"Masuk waktu {e.Name}", () => $"{e.At:HH:mm} · {zone} · tamat {end:HH:mm}{est}",
+                             () => MarkDone(e), () => !_done.IsDone(e), 0, false, Sounds.Default,
+                             e.At.AddMinutes(20), e.At.AddMinutes(20) < end ? e.At.AddMinutes(20) : end);
             }
 
             var due = _reminders.Check(snap, now, _settings.Remind, _done.IsDone);
             if (due != null)
             {
-                var e = due;
-                _notify.Show($"Waktu {e.Name} tinggal {Util.Duration(snap.Next.At - now)}",
-                             $"Tamat {snap.Next.At:HH:mm} ({snap.Next.Name}) · {_store.Zone.ShortName}{est}",
-                             () => MarkDone(e), 0, false, Sounds.Reminder, snap.Next.At, snap.Next.At);
+                var e = due; var next = snap.Next; string zone = _store.Zone.ShortName;
+                _notify.Show(e.Key, () => $"Waktu {e.Name} tinggal {Util.Duration(next.At - Clock.Now)}",   // text built when shown
+                             () => $"Tamat {next.At:HH:mm} ({next.Name}) · {zone}{est}",
+                             () => MarkDone(e), () => !_done.IsDone(e), 0, false, Sounds.Reminder, next.At, next.At);
             }
 
             if (_settings.Dhuha)
@@ -346,10 +347,10 @@ namespace WaktuSolat
                 switch (_dhuha.Check(d, now, _settings.Remind, _store.Zone.Code))
                 {
                     case DhuhaEvent.Started:
-                        _notify.Show("Waktu Dhuha bermula", $"Hingga ~{d.DhuhaEnd:HH:mm} ({zohor}){tag}", null, 25, true, Sounds.Default, d.DhuhaStart.AddMinutes(30), d.DhuhaEnd);
+                        _notify.Show(null, () => "Waktu Dhuha bermula", () => $"Hingga ~{d.DhuhaEnd:HH:mm} ({zohor}){tag}", null, null, 25, true, Sounds.Default, d.DhuhaStart.AddMinutes(30), d.DhuhaEnd);
                         break;
                     case DhuhaEvent.Ending:
-                        _notify.Show($"Dhuha tamat dalam {Util.Duration(d.DhuhaEnd - now)}", $"Solat sebelum ~{d.DhuhaEnd:HH:mm} · {zohor}{tag}", null, 0, true, Sounds.Default, d.DhuhaEnd, d.DhuhaEnd);
+                        _notify.Show(null, () => $"Dhuha tamat dalam {Util.Duration(d.DhuhaEnd - Clock.Now)}", () => $"Solat sebelum ~{d.DhuhaEnd:HH:mm} · {zohor}{tag}", null, null, 0, true, Sounds.Default, d.DhuhaEnd, d.DhuhaEnd);
                         break;
                 }
             }
@@ -405,6 +406,7 @@ namespace WaktuSolat
         void MarkDone(Entry e)
         {
             if (!_done.IsDone(e)) _done.Toggle(e);
+            Toast.CloseFor(e.Key);
             _widget.ForceRepaint();
         }
 
@@ -611,47 +613,62 @@ namespace WaktuSolat
     // ---------------------------------------------------------------- notifications (held back during presentations)
     sealed class Notifier
     {
-        sealed class Item { public string Title, Body, Sound; public Action OnDone; public int AutoClose; public bool Sticky; public DateTime ShowBy, Expires; }
+        sealed class Item
+        {
+            public string Key, Sound; public Func<string> Title, Body; public Action OnDone; public Func<bool> Valid;
+            public int AutoClose; public bool Sticky; public DateTime ShowBy, Expires;
+        }
 
-        Item _pending;
+        Item _pending, _shown;
         public bool SoundOn = true;
 
-        /// autoClose: seconds (0 = stays until acted on / expired). showBy: if held back during a presentation,
-        /// drop it after this time. expires: the popup closes itself at this time. Times are Malaysia time.
-        public void Show(string title, string body, Action onDone, int autoClose, bool sticky, string sound, DateTime showBy, DateTime expires)
+        /// key: the waktu this popup is about (closed when ticked). title/body are built when actually shown.
+        /// valid: re-checked before showing (e.g. not ticked meanwhile). autoClose: seconds (0 = until acted on / expired).
+        /// showBy: if held back (presentation, fullscreen, locked), drop after this. expires: popup closes itself then.
+        public void Show(string key, Func<string> title, Func<string> body, Action onDone, Func<bool> valid,
+                         int autoClose, bool sticky, string sound, DateTime showBy, DateTime expires)
         {
-            var it = new Item { Title = title, Body = body, OnDone = onDone, AutoClose = autoClose, Sticky = sticky, Sound = sound, ShowBy = showBy, Expires = expires };
-            if (UserBusy())
-            {
-                if (_pending == null || _pending.OnDone == null || it.OnDone != null) _pending = it;   // reminders win
-                return;
-            }
+            var it = new Item { Key = key, Title = title, Body = body, OnDone = onDone, Valid = valid, AutoClose = autoClose,
+                                Sticky = sticky, Sound = sound, ShowBy = showBy, Expires = expires };
+            if (UserBusy()) { Hold(it); return; }
             Present(it);
         }
 
-        /// Low-priority, silent info (zone changed, location result); dropped during presentations.
+        /// Low-priority, silent info (zone changed, location result); dropped when the user is busy.
         public void Info(string title, string body)
         {
-            if (!UserBusy()) Present(new Item { Title = title, Body = body, AutoClose = 8, Expires = DateTime.MaxValue });
+            if (!UserBusy()) Present(new Item { Title = () => title, Body = () => body, AutoClose = 8, Expires = DateTime.MaxValue });
         }
 
         public void Tick(DateTime now)
         {
-            if (_pending == null || UserBusy()) return;
+            if (UserBusy())
+            {
+                // A presentation started while a popup is up: take it down and bring it back afterwards.
+                if (_shown != null && Toast.IsOpen(_shown.Key) && _shown.OnDone != null) { Toast.CloseCurrent(); Hold(_shown); _shown = null; }
+                return;
+            }
+            if (_pending == null) return;
             var p = _pending; _pending = null;
-            if (now < p.ShowBy) Present(p);
+            if (now < p.ShowBy && (p.Valid == null || p.Valid())) Present(p);
+        }
+
+        void Hold(Item it)
+        {
+            if (_pending == null || _pending.OnDone == null || it.OnDone != null) _pending = it;   // reminders win
         }
 
         void Present(Item it)
         {
-            if (Toast.Show(it.Title, it.Body, it.OnDone, it.AutoClose, it.Expires, it.Sticky) && SoundOn && it.Sound != null)
-                Sounds.Play(it.Sound);
+            if (!Toast.Show(it.Title(), it.Body(), it.OnDone, it.AutoClose, it.Expires, it.Sticky, it.Key)) return;
+            _shown = it;
+            if (SoundOn && it.Sound != null) Sounds.Play(it.Sound);
         }
 
-        // Fullscreen app, Direct3D game or presentation (PowerPoint slideshow / "presentation mode").
+        // Locked (1), fullscreen app (2), Direct3D fullscreen (3) or presentation mode / slideshow (4).
         static bool UserBusy()
         {
-            try { return SHQueryUserNotificationState(out int s) == 0 && (s == 2 || s == 3 || s == 4); }
+            try { return SHQueryUserNotificationState(out int s) == 0 && s >= 1 && s <= 4; }
             catch { return false; }
         }
 

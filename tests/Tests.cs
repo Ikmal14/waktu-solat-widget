@@ -161,6 +161,8 @@ static class T
            && Throws(() => Updates.Parse(Rel("v5.1.0", "https://github.com/Ikmal14/waktu-solat-widget/releases/../../evil")))
            && Throws(() => Updates.Parse(Rel("v5.1.0", "https://github.com/Ikmal14/waktu-solat-widget/releases/x\\\" & calc"))), "only this repo's release pages can be opened");
         Ok(Throws(() => Updates.Parse(Rel("latest", page))) && Throws(() => Updates.Parse("<html>proxy</html>")), "bad tag / non-JSON rejected");
+        Ok(Throws(() => Updates.ParseVersion("v5.1.0\n")) && Throws(() => Updates.ParseVersion("v\u0665.1.0")) && !Updates.SafePage(page + "\n")
+           && Throws(() => Updates.ParseVersion("v5.1.0-beta")), "trailing newline / Unicode digits / pre-release tags rejected");
         Ok(Updates.IsNewer(new Version(5, 1, 0), new Version(5, 0, 0, 0)) && !Updates.IsNewer(new Version(5, 0, 0), new Version(5, 0, 0, 0)) && !Updates.IsNewer(new Version(4, 9, 9), new Version(5, 0, 0, 0)), "version comparison");
         var now0 = new DateTime(2026, 11, 5, 0, 0, 0, DateTimeKind.Utc);
         Ok(Updates.Due(DateTime.MinValue, false, now0) && !Updates.Due(now0.AddDays(-6), true, now0) && Updates.Due(now0.AddDays(-7), true, now0)
