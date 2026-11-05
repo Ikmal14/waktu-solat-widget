@@ -170,6 +170,29 @@ static class T
         Ok(Updates.AllowedApi(new Uri(Updates.ApiUrl)) && !Updates.AllowedApi(new Uri("https://api.github.com/repos/other/repo/releases/latest"))
            && !Updates.AllowedApi(new Uri("http://api.github.com/repos/Ikmal14/waktu-solat-widget/releases/latest")) && !Updates.AllowedApi(new Uri("https://evil.com/repos/Ikmal14/waktu-solat-widget/")), "update check only talks to this repo on api.github.com over HTTPS");
 
+        // --- self-update: release asset parsing + verification
+        var exeBytes = new byte[20000]; exeBytes[0] = (byte)'M'; exeBytes[1] = (byte)'Z'; new Random(1).NextBytes(new Span<byte>(exeBytes, 2, exeBytes.Length - 2));
+        string shaHex; using (var sha = System.Security.Cryptography.SHA256.Create()) shaHex = BitConverter.ToString(sha.ComputeHash(exeBytes)).Replace("-", "").ToLowerInvariant();
+        string RelA(string tag, string dl, string digest, long size) =>
+            $"{{\"tag_name\":\"{tag}\",\"html_url\":\"https://github.com/Ikmal14/waktu-solat-widget/releases/tag/{tag}\",\"draft\":false,\"prerelease\":false," +
+            $"\"assets\":[{{\"name\":\"WaktuSolat.exe\",\"size\":{size},\"digest\":\"{digest}\",\"browser_download_url\":\"{dl}\"}}]}}";
+        string goodDl = "https://github.com/Ikmal14/waktu-solat-widget/releases/download/v5.2.0/WaktuSolat.exe";
+        var ra = Updates.Parse(RelA("v5.2.0", goodDl, "sha256:" + shaHex, exeBytes.Length));
+        Ok(ra.AssetUrl == goodDl && ra.Sha256 == shaHex && ra.Size == exeBytes.Length, "release exe found with GitHub's SHA-256 digest");
+        Ok(Updates.Parse(RelA("v5.2.0", "https://evil.example.com/WaktuSolat.exe", "sha256:" + shaHex, exeBytes.Length)).AssetUrl == null
+           && Updates.Parse(RelA("v5.2.0", goodDl.Replace("v5.2.0", "v5.0.0"), "sha256:" + shaHex, exeBytes.Length)).AssetUrl == null
+           && Updates.Parse(RelA("v5.2.0", goodDl.Replace("Ikmal14", "someone"), "sha256:" + shaHex, exeBytes.Length)).AssetUrl == null,
+           "exe from another host / tag / repo is ignored (manual update instead)");
+        Ok(Updates.Parse(RelA("v5.2.0", goodDl, "md5:abc", exeBytes.Length)).AssetUrl == null && Updates.Parse(RelA("v5.2.0", goodDl, "sha256:" + shaHex, 99_000_000)).AssetUrl == null,
+           "missing/odd digest or huge size → no auto-install");
+        Ok(Updates.Download(ra, _ => exeBytes).Length == exeBytes.Length, "download accepted when size + SHA-256 match");
+        var tampered = (byte[])exeBytes.Clone(); tampered[5000] ^= 1;
+        bool rejected(Func<byte[]> f) { try { f(); return false; } catch (InvalidDataException) { return true; } }
+        Ok(rejected(() => Updates.Download(ra, _ => tampered)) && rejected(() => Updates.Download(ra, _ => new byte[10])), "tampered or truncated download rejected");
+        Ok(Updates.AllowedDownload(new Uri(goodDl)) && Updates.AllowedDownload(new Uri("https://release-assets.githubusercontent.com/github-production-release-asset/1/x"))
+           && !Updates.AllowedDownload(new Uri("http://release-assets.githubusercontent.com/x")) && !Updates.AllowedDownload(new Uri("https://github.com/someone/repo/releases/download/v1/x.exe"))
+           && !Updates.AllowedDownload(new Uri("https://evil.com/Ikmal14/waktu-solat-widget/releases/download/x")), "download allow-list: this repo's files + GitHub storage, HTTPS only");
+
         // --- zone locator (offline, embedded polygons)
         var gz = Path.Combine(AppContext.BaseDirectory, "zones.dat.gz");
         string L(double lat, double lng) { using (var f = File.OpenRead(gz)) return ZoneLocator.Locate(f, lat, lng); }

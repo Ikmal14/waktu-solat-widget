@@ -8,6 +8,10 @@ A minimal Malaysian prayer-times widget for Windows 10/11.
 ## Download
 Get `WaktuSolat.exe` from [Releases](../../releases/latest). Put it somewhere permanent, e.g. `Documents\WaktuSolat\`, and run it. If SmartScreen appears: **More info → Run anyway** (the exe isn't code-signed).
 
+**Verify the download** (optional):
+- Every release is built from this source by GitHub Actions and carries a signed build-provenance attestation. Check it with `gh attestation verify WaktuSolat.exe --repo Ikmal14/waktu-solat-widget`.
+- The SHA-256 is listed on each release page.
+
 ## What it does
 
 **Widget**
@@ -30,19 +34,24 @@ Get `WaktuSolat.exe` from [Releases](../../releases/latest). Put it somewhere pe
 - **Auto zone** from Windows Location, matched to a JAKIM zone on your PC.
 - **Tema:** follow Windows, Gelap or Terang, plus 5 accent colours.
 - **Starts with Windows**; turn it off in the menu.
-- **Update check** once a week. It shows a small "Versi X tersedia" link and never installs anything by itself.
+- **Updates:**
+  - The app checks once a week; *Kemas kini → Semak sekarang* checks right away.
+  - Clicking **"Versi X tersedia"** downloads the new exe from this repo's release, verifies it, swaps it in, restarts, and **removes the old version**.
+  - The verification: the file's size and SHA-256 must match GitHub's published digest, and it must identify itself as Waktu Solat at exactly that version.
+  - Nothing is installed without your click.
 
 Right-click the widget or the tray icon for the menu: Zon, Peringatan, Bunyi, Tema, Susun atur, and so on. The location and hide buttons appear when you hover over the widget.
 
 If the footer says **"≈ Anggaran"**, JAKIM data couldn't be downloaded yet and the times are calculated. Don't rely on those for Subuh. The menu shows the reason.
 
 ## Security & privacy
-- **Network:** HTTPS only, to two places:
+- **Network:** HTTPS only, to:
   - `e-solat.gov.my` for prayer times.
-  - `api.github.com`, once a week, to read this repo's latest release number (can be turned off).
+  - `api.github.com`, once a week, to read this repo's latest release (can be turned off).
+  - When you click an update: `github.com/Ikmal14/waktu-solat-widget/releases/download/…` and GitHub's release storage, `release-assets.githubusercontent.com`.
 - **Connections:** certificates are always checked, redirects are re-checked against the allow-list, and responses are size- and time-limited and validated.
 - **Location:** read through Windows, matched to a zone in memory, then discarded. Only the zone code is saved.
-- **Files:** `%APPDATA%\WaktuSolat\` (settings, cache, ticks). The only registry write is `HKCU\…\Run\WaktuSolat`, for autostart.
+- **Files:** `%APPDATA%\WaktuSolat\` (settings, cache, ticks), plus the exe's own folder during an update. The only registry write is `HKCU\…\Run\WaktuSolat`, for autostart.
 - **No tracking:** no telemetry, no accounts, no tokens, no admin rights.
 
 ## How Dhuha is timed
@@ -70,4 +79,4 @@ cd tests && dotnet run -c Release
 ```
 
 ## Releasing an update
-Bump `<Version>` in `WaktuSolat.csproj` (e.g. `5.0.1`) and push to `main`. GitHub Actions builds the exe on Windows, runs the tests and publishes release `v5.0.1`. Installed widgets notice it at their next weekly check.
+Bump `<Version>` in `WaktuSolat.csproj` (e.g. `5.0.1`) and push to `main`. GitHub Actions builds the exe on Windows, runs the tests and publishes release `v5.0.1`. Installed widgets (v5.1+) notice it at their next weekly check and update themselves when you click the notice.

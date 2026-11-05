@@ -10,7 +10,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # create tag + release
+  contents: write       # create tag + release
+  id-token: write       # build provenance attestation (Sigstore)
+  attestations: write
 
 concurrency: release
 
@@ -41,6 +43,12 @@ jobs:
         if: steps.v.outputs.exists == '0'
         run: dotnet run -c Release --project tests/Tests.csproj
 
+      - name: Attest build provenance
+        if: steps.v.outputs.exists == '0'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: bin/Release/net48/WaktuSolat.exe
+
       - name: Publish release
         if: steps.v.outputs.exists == '0'
         shell: pwsh
@@ -52,9 +60,11 @@ jobs:
           @"
           **Download ``WaktuSolat.exe`` below**, put it somewhere permanent (e.g. ``Documents\WaktuSolat\``) and run it. Windows 10/11, no install, no admin.
 
-          Updating: right-click the tray icon → **Keluar**, replace the old exe, run it again. Settings are kept.
+          Updating from v5.1 or later: click **"Versi … tersedia"** in the widget — it downloads, verifies and installs itself, then removes the old version. From v5.0: right-click the tray icon → **Keluar**, replace the exe, run it. Settings are kept.
 
           Built from source by GitHub Actions. SHA-256: ``$sha``
+
+          Verify it was built from this repo: ``gh attestation verify WaktuSolat.exe --repo Ikmal14/waktu-solat-widget``
 
           The exe isn't code-signed: if SmartScreen appears, choose **More info → Run anyway**.
           "@ | Set-Content notes.md

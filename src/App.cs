@@ -15,16 +15,25 @@ namespace WaktuSolat
     static class Program
     {
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
-            using (var mutex = new Mutex(true, @"Local\WaktuSolat-SingleInstance", out bool first))
+            bool updated = args.Contains("--updated");
+            using (var mutex = new Mutex(false, @"Local\WaktuSolat-SingleInstance"))
             {
-                if (!first) return;   // already running (see tray)
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-                Application.ThreadException += (s, e) => Log(e.Exception);
-                AppDomain.CurrentDomain.UnhandledException += (s, e) => Log(e.ExceptionObject as Exception);
-                Application.Run(new TrayApp());
+                bool owned;
+                // After a self-update the old process may still be closing: wait for it instead of quitting.
+                try { owned = mutex.WaitOne(updated ? 20000 : 0); } catch (AbandonedMutexException) { owned = true; }
+                if (!owned) return;   // already running (see tray)
+                try
+                {
+                    Application.EnableVisualStyles();
+                    Application.SetCompatibleTextRenderingDefault(false);
+                    Application.ThreadException += (s, e) => Log(e.Exception);
+                    AppDomain.CurrentDomain.UnhandledException += (s, e) => Log(e.ExceptionObject as Exception);
+                    SelfUpdate.CleanupOldVersion();
+                    Application.Run(new TrayApp(updated));
+                }
+                finally { mutex.ReleaseMutex(); }
             }
         }
 
@@ -214,8 +223,12 @@ namespace WaktuSolat
         string _locStatus = "";
         bool _locSettingsHint;
 
-        public TrayApp()
+        readonly bool _justUpdated;
+        bool _installing;
+
+        public TrayApp(bool justUpdated = false)
         {
+            _justUpdated = justUpdated;
             Theme.Apply((Theme.Mode)_settings.ThemeMode, _settings.Accent);
             _store = new DataStore(Program.DataDir, _settings.Zone);
             _done = new DoneStore(Program.DataDir);
@@ -242,6 +255,11 @@ namespace WaktuSolat
             _timer.Start();
             Tick();
             if (_settings.Visible) _widget.Show();
+            if (_justUpdated)
+            {
+                _settings.UpdateVersion = null; _settings.UpdateUrl = null; _settings.Save();
+                _notify.Info($"Dikemas kini ke versi {Current.ToString(3)}", "Versi lama telah dibuang.");
+            }
         }
 
         void OnPower(object sender, PowerModeChangedEventArgs e)
@@ -368,7 +386,8 @@ namespace WaktuSolat
         bool UpdateAvailable => _settings.UpdateUrl != null && _settings.UpdateVersion != null
                                 && Updates.IsNewer(new Version(_settings.UpdateVersion), Current);
 
-        void ShowUpdateState() => _widget.UpdateText = UpdateAvailable ? $"Versi {_settings.UpdateVersion} tersedia · klik" : null;
+        void ShowUpdateState() => _widget.UpdateText =
+            _installing ? "Memuat turun kemas kini…" : UpdateAvailable ? $"Versi {_settings.UpdateVersion} tersedia · klik untuk kemas kini" : null;
 
         void CheckUpdate()
         {
@@ -397,10 +416,46 @@ namespace WaktuSolat
             }) { IsBackground = true, Name = "UpdateCheck" }.Start();
         }
 
+        /// Click on "Versi X tersedia": download + verify + install, then restart. Falls back to the release page.
         void OpenUpdate()
         {
-            if (!UpdateAvailable || !Updates.SafePage(_settings.UpdateUrl)) return;
-            try { Process.Start(new ProcessStartInfo(_settings.UpdateUrl) { UseShellExecute = true }); } catch { }
+            if (!UpdateAvailable || _installing) return;
+            _installing = true;
+            _widget.UpdateText = "Memuat turun kemas kini…"; _widget.ForceRepaint();
+            new Thread(() =>
+            {
+                Updates.Release rel = null; byte[] exe = null; string error = null;
+                try
+                {
+                    rel = Updates.Check();                                   // fresh info, not days-old settings
+                    if (rel == null || !Updates.IsNewer(rel.Version, Current)) error = "Tiada versi baharu";
+                    else if (rel.AssetUrl != null) exe = Updates.Download(rel);   // size + SHA-256 verified
+                }
+                catch (Exception ex) { error = ex.Message; }
+                try { _widget.BeginInvoke((Action)(() => FinishUpdate(rel, exe, error))); } catch { }
+            }) { IsBackground = true, Name = "Update" }.Start();
+        }
+
+        void FinishUpdate(Updates.Release rel, byte[] exe, string error)
+        {
+            _installing = false;
+            if (error == null && exe != null)
+            {
+                try { SelfUpdate.Install(exe, rel.Version); ExitThread(); return; }   // new version starts, this one exits
+                catch (Exception ex) { error = ex.Message; }
+            }
+            ShowUpdateState(); _widget.ForceRepaint();
+            if (error == "Tiada versi baharu") { _settings.UpdateVersion = null; _settings.UpdateUrl = null; _settings.Save(); ShowUpdateState(); return; }
+            // Couldn't install automatically (e.g. folder not writable): open the release page instead.
+            var page = rel?.Url ?? _settings.UpdateUrl;
+            if (error != null) _notify.Info("Kemas kini automatik gagal", Short(error) + " · buka halaman muat turun");
+            if (Updates.SafePage(page)) try { Process.Start(new ProcessStartInfo(page) { UseShellExecute = true }); } catch { }
+        }
+
+        void CheckUpdateNow()
+        {
+            _settings.LastUpdateUtc = DateTime.MinValue; _settings.LastUpdateOk = false;
+            if (!_updateBusy) CheckUpdate();
         }
 
         void MarkDone(Entry e)
@@ -466,7 +521,7 @@ namespace WaktuSolat
             foreach (var it in old) it.Dispose();   // free submenu handles from the previous build
             if (UpdateAvailable)
             {
-                _menu.Items.Add(new ToolStripMenuItem($"↑ Muat turun versi {_settings.UpdateVersion}", null, (s, e) => OpenUpdate())
+                _menu.Items.Add(new ToolStripMenuItem($"↑ Kemas kini ke versi {_settings.UpdateVersion}", null, (s, e) => OpenUpdate())
                     { Font = _bold ?? (_bold = new Font(_menu.Font, FontStyle.Bold)) });
                 _menu.Items.Add(new ToolStripSeparator());
             }
@@ -545,8 +600,11 @@ namespace WaktuSolat
                                      : "Data: JAKIM e-Solat ✓"));
             if (_locStatus.Length > 0) _menu.Items.Add(Info("Lokasi: " + Short(_locStatus)));
             _menu.Items.Add(new ToolStripMenuItem("Muat turun semula data JAKIM", null, (s, e) => _store.Refresh()));
-            _menu.Items.Add(new ToolStripMenuItem($"Semak kemas kini seminggu sekali (v{Current.ToString(3)})", null,
+            var upd = new ToolStripMenuItem($"Kemas kini (v{Current.ToString(3)})");
+            upd.DropDownItems.Add(new ToolStripMenuItem("Semak sekarang", null, (s, e) => CheckUpdateNow()) { Enabled = !_updateBusy && !_installing });
+            upd.DropDownItems.Add(new ToolStripMenuItem("Semak seminggu sekali", null,
                 (s, e) => { _settings.UpdateCheck = !_settings.UpdateCheck; _settings.Save(); }) { Checked = _settings.UpdateCheck });
+            _menu.Items.Add(upd);
             if (_locSettingsHint)
                 _menu.Items.Add(new ToolStripMenuItem("Buka tetapan Lokasi Windows", null,
                     (s, e) => { try { Process.Start("ms-settings:privacy-location"); } catch { } }));
@@ -674,5 +732,58 @@ namespace WaktuSolat
 
         [System.Runtime.InteropServices.DllImport("shell32.dll")]
         static extern int SHQueryUserNotificationState(out int state);
+    }
+
+    // ---------------------------------------------------------------- self-update (replace exe, restart, remove old)
+    static class SelfUpdate
+    {
+        static string Exe => Application.ExecutablePath;
+        static string Old => Exe + ".old";
+        static string New => Exe + ".new";
+
+        /// bytes are already size- and SHA-256-verified against GitHub. Swap files and start the new version.
+        public static void Install(byte[] bytes, Version expected)
+        {
+            TryDelete(New); TryDelete(Old);
+            File.WriteAllBytes(New, bytes);
+            try
+            {
+                // Must be our app, at exactly the version announced.
+                var name = System.Reflection.AssemblyName.GetAssemblyName(New);
+                var info = FileVersionInfo.GetVersionInfo(New);
+                if (name.Name != "WaktuSolat" || info.ProductName != "Waktu Solat"
+                    || name.Version.Major != expected.Major || name.Version.Minor != expected.Minor || name.Version.Build != expected.Build)
+                    throw new InvalidDataException("Fail kemas kini bukan Waktu Solat " + expected.ToString(3));
+            }
+            catch { TryDelete(New); throw; }
+
+            File.Move(Exe, Old);                      // a running exe can be renamed, not overwritten
+            try
+            {
+                File.Move(New, Exe);
+                Process.Start(new ProcessStartInfo(Exe, "--updated") { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(Exe) });
+            }
+            catch
+            {
+                TryDelete(Exe); if (File.Exists(Old)) File.Move(Old, Exe);   // roll back
+                throw;
+            }
+        }
+
+        /// Called at every start: removes the previous version left by an update (retries while it is still closing).
+        public static void CleanupOldVersion()
+        {
+            if (!File.Exists(Old) && !File.Exists(New)) return;
+            new Thread(() =>
+            {
+                for (int i = 0; i < 30 && (File.Exists(Old) || File.Exists(New)); i++)
+                {
+                    TryDelete(Old); TryDelete(New);
+                    Thread.Sleep(1000);
+                }
+            }) { IsBackground = true, Name = "Cleanup" }.Start();
+        }
+
+        static void TryDelete(string f) { try { if (File.Exists(f)) File.Delete(f); } catch { } }
     }
 }

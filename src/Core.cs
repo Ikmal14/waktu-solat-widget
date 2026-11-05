@@ -560,7 +560,10 @@ namespace WaktuSolat
     /// size and time limits. TLS version follows Windows policy; certificate validation is never overridden.
     public static class Net
     {
-        public static string Get(string url, Func<Uri, bool> allowed, string accept, string userAgent)
+        public static string Get(string url, Func<Uri, bool> allowed, string accept, string userAgent) =>
+            Encoding.UTF8.GetString(GetBytes(url, allowed, accept, userAgent, 2_000_000));
+
+        public static byte[] GetBytes(string url, Func<Uri, bool> allowed, string accept, string userAgent, int maxBytes)
         {
             var uri = new Uri(url);
             var deadline = DateTime.UtcNow.AddSeconds(60);
@@ -588,17 +591,18 @@ namespace WaktuSolat
                         continue;
                     }
                     if (resp.StatusCode != HttpStatusCode.OK) throw new WebException("HTTP " + code);
-                    using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                    using (var st = resp.GetResponseStream())
+                    using (var ms = new MemoryStream())
                     {
-                        var buf = new char[2_000_001];
-                        int n = 0, r;
-                        while ((r = sr.Read(buf, n, buf.Length - n)) > 0)
+                        var buf = new byte[81920];
+                        int r;
+                        while ((r = st.Read(buf, 0, buf.Length)) > 0)
                         {
-                            n += r;
-                            if (n >= buf.Length) throw new WebException("Respons terlalu besar");
+                            ms.Write(buf, 0, r);
+                            if (ms.Length > maxBytes) throw new WebException("Respons terlalu besar");
                             if (DateTime.UtcNow > deadline) throw new WebException("Masa tamat");
                         }
-                        return new string(buf, 0, n);
+                        return ms.ToArray();
                     }
                 }
             }
@@ -820,7 +824,17 @@ namespace WaktuSolat
         public static readonly string ApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases/latest";
         public static readonly string PagePrefix = $"https://github.com/{Owner}/{Repo}/releases/";
 
-        public sealed class Release { public Version Version; public string Url; }
+        public const string AssetName = "WaktuSolat.exe";
+        public const int MaxAssetBytes = 5_000_000;
+
+        /// AssetUrl/Sha256/Size are null/0 when the release has no valid exe (then: update by hand from Url).
+        public sealed class Release { public Version Version; public string Tag, Url, AssetUrl, Sha256; public long Size; }
+
+        /// Downloads only from this repo's release files (github.com → GitHub's release storage), over HTTPS.
+        public static bool AllowedDownload(Uri u) =>
+            u.Scheme == Uri.UriSchemeHttps
+            && ((u.Host == "github.com" && u.AbsolutePath.StartsWith($"/{Owner}/{Repo}/releases/download/", StringComparison.Ordinal))
+                || u.Host == "release-assets.githubusercontent.com" || u.Host == "objects.githubusercontent.com");
 
         public static bool AllowedApi(Uri u) =>
             u.Scheme == Uri.UriSchemeHttps && u.Host == "api.github.com"
@@ -846,7 +860,24 @@ namespace WaktuSolat
             if (root.TryGetValue("prerelease", out var pr) && pr is bool p && p) return null;
             var url = root.TryGetValue("html_url", out var u) ? Json.Str(u) : null;
             if (!SafePage(url)) throw new FormatException("Unexpected release URL");
-            return new Release { Version = ParseVersion(root.TryGetValue("tag_name", out var t) ? Json.Str(t) : null), Url = url };
+            string tag = root.TryGetValue("tag_name", out var t) ? Json.Str(t) : null;
+            var rel = new Release { Version = ParseVersion(tag), Tag = tag, Url = url };
+
+            // The exe: exact name, exact URL for this tag, GitHub's SHA-256 digest, sane size. Anything else → manual update.
+            if (root.TryGetValue("assets", out var assets) && assets is List<object> list)
+                foreach (var o in list)
+                {
+                    if (!(o is Dictionary<string, object> a) || !a.TryGetValue("name", out var n) || Json.Str(n) != AssetName) continue;
+                    string dl = a.TryGetValue("browser_download_url", out var b) ? Json.Str(b) : null;
+                    string dg = a.TryGetValue("digest", out var g) ? Json.Str(g) : null;
+                    long size = a.TryGetValue("size", out var z) && z is double zd ? (long)zd : 0;
+                    if (dl == $"https://github.com/{Owner}/{Repo}/releases/download/{tag}/{AssetName}"
+                        && dg != null && System.Text.RegularExpressions.Regex.IsMatch(dg, "^sha256:[0-9a-f]{64}\\z")
+                        && size > 10_000 && size <= MaxAssetBytes)
+                    { rel.AssetUrl = dl; rel.Sha256 = dg.Substring(7); rel.Size = size; }
+                    break;
+                }
+            return rel;
         }
 
         public static bool IsNewer(Version latest, Version current) =>
@@ -855,6 +886,26 @@ namespace WaktuSolat
         /// Weekly after a successful check; a failed check (offline, blocked) is retried the next day.
         public static bool Due(DateTime lastUtc, bool lastOk, DateTime nowUtc) =>
             nowUtc - lastUtc >= TimeSpan.FromDays(lastOk ? 7 : 1) || nowUtc < lastUtc;
+
+        /// Download the release exe and check it byte-for-byte against GitHub's published size and SHA-256.
+        public static byte[] Download(Release r, Func<string, byte[]> get = null)
+        {
+            if (r?.AssetUrl == null) throw new InvalidOperationException("Tiada fail exe dalam keluaran ini");
+            var bytes = (get ?? (url => Net.GetBytes(url, AllowedDownload, "application/octet-stream", "WaktuSolat-Widget", MaxAssetBytes)))(r.AssetUrl);
+            Verify(bytes, r);
+            return bytes;
+        }
+
+        public static void Verify(byte[] bytes, Release r)
+        {
+            if (bytes == null || bytes.LongLength != r.Size) throw new InvalidDataException("Saiz fail tidak sepadan");
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var hex = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                if (hex != r.Sha256) throw new InvalidDataException("SHA-256 tidak sepadan, fail ditolak");
+            }
+            if (bytes.Length < 2 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z') throw new InvalidDataException("Bukan fail program Windows");
+        }
 
         /// null = no (stable) release published yet — GitHub answers 404 then, which is not a failure.
         public static Release Check()
