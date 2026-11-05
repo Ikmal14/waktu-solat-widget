@@ -1,38 +1,51 @@
-# Builds WaktuSolat.exe from source and publishes a GitHub Release when a version tag (vX.Y.Z) is pushed.
-# The widget checks the latest release once a week. Uses only GitHub's built-in token — no stored secrets.
+# Publishes a GitHub Release whenever the version in WaktuSolat.csproj changes on main:
+# builds WaktuSolat.exe from source on Windows, runs the tests, creates tag vX.Y.Z + release.
+# Already-released versions are skipped. Uses only GitHub's built-in token — no stored secrets.
 name: release
 
 on:
   push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+    branches: [main]
+    paths: ['WaktuSolat.csproj', '.github/workflows/release.yml']
+  workflow_dispatch:
 
 permissions:
-  contents: write   # needed to create the release
+  contents: write   # create tag + release
+
+concurrency: release
 
 jobs:
   release:
     runs-on: windows-latest
     env:
-      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tag must match the project version
+      - name: Read version
+        id: v
         shell: pwsh
         run: |
           $v = ([xml](Get-Content WaktuSolat.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-          if ("v$v" -ne $env:TAG) { throw "Tag $env:TAG does not match WaktuSolat.csproj version v$v" }
+          if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Bad version '$v'" }
+          gh release view "v$v" *> $null
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+          "exists=$([int]($LASTEXITCODE -eq 0))" >> $env:GITHUB_OUTPUT
+          $global:LASTEXITCODE = 0
 
       - name: Build
+        if: steps.v.outputs.exists == '0'
         run: dotnet build -c Release -nologo
 
       - name: Test
+        if: steps.v.outputs.exists == '0'
         run: dotnet run -c Release --project tests/Tests.csproj
 
       - name: Publish release
+        if: steps.v.outputs.exists == '0'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
           $exe = "bin/Release/net48/WaktuSolat.exe"
           $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
@@ -45,4 +58,4 @@ jobs:
 
           The exe isn't code-signed: if SmartScreen appears, choose **More info → Run anyway**.
           "@ | Set-Content notes.md
-          gh release create $env:TAG $exe --title "Waktu Solat $env:TAG" --notes-file notes.md
+          gh release create $env:TAG $exe --target $env:GITHUB_SHA --title "Waktu Solat $env:TAG" --notes-file notes.md
