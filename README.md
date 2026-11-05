@@ -8,6 +8,12 @@ A minimal Malaysian prayer-times widget for Windows 10/11.
 ## Download
 Get `WaktuSolat.exe` from [Releases](../../releases/latest). Put it somewhere permanent, e.g. `Documents\WaktuSolat\`, and run it. If SmartScreen appears: **More info → Run anyway** (the exe isn't code-signed).
 
+**"Windows protected your PC" (SmartScreen)** appears once, on the first browser download, because the exe isn't code-signed and is new. Either:
+- click **More info → Run anyway**, or
+- before running: right-click `WaktuSolat.exe` → **Properties** → tick **Unblock** → **OK**.
+
+Updates installed by the app itself don't show this warning. On a managed work laptop, follow your IT policy; if *Run anyway* is missing, IT has blocked unrecognised apps.
+
 **Verify the download** (optional):
 - Every release is built from this source by GitHub Actions and carries a signed build-provenance attestation. Check it with `gh attestation verify WaktuSolat.exe --repo Ikmal14/waktu-solat-widget`.
 - The SHA-256 is listed on each release page.
