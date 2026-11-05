@@ -68,3 +68,6 @@ The design follows Windows 11 (Fluent) guidance:
 dotnet build -c Release          # → bin/Release/net48/WaktuSolat.exe
 cd tests && dotnet run -c Release
 ```
+
+## Releasing an update
+Bump `<Version>` in `WaktuSolat.csproj` (e.g. `5.0.1`) and push to `main`. GitHub Actions builds the exe on Windows, runs the tests and publishes release `v5.0.1`. Installed widgets notice it at their next weekly check.
