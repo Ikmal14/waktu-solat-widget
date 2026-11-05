@@ -1,5 +1,7 @@
 # Waktu Solat
 
+![Waktu Solat — widget waktu solat minimal untuk Windows](.github/social-preview.png)
+
 A minimal Malaysian prayer-times widget for Windows 10/11.
 
 - One small `.exe`, about 200 KB. No install, no admin rights, no Python. It uses .NET Framework 4.8, which is already part of Windows.
