@@ -8,7 +8,7 @@ A minimal Malaysian prayer-times widget for Windows 10/11.
 - **Official JAKIM e-Solat times** for every zone. It downloads a whole year at once and caches it, so it keeps working offline.
 
 ## Download
-Get `WaktuSolat.exe` from [Releases](../../releases/latest). Put it somewhere permanent, e.g. `Documents\WaktuSolat\`, and run it. If SmartScreen appears: **More info → Run anyway** (the exe isn't code-signed).
+Get `WaktuSolat.exe` from [Releases](../../releases/latest). Put it in a local folder that OneDrive doesn't sync, e.g. `%LOCALAPPDATA%\Programs\WaktuSolat\`, and run it. If you run it from OneDrive or Downloads, the app offers to move itself there. If SmartScreen appears: **More info → Run anyway** (the exe isn't code-signed).
 
 **"Windows protected your PC" (SmartScreen)** appears once, on the first browser download, because the exe isn't code-signed and is new. Either:
 - click **More info → Run anyway**, or
@@ -41,7 +41,7 @@ Updates installed by the app itself don't show this warning. On a managed work l
 **Location and settings**
 - **Auto zone** from Windows Location, matched to a JAKIM zone on your PC.
 - **Tema:** follow Windows, Gelap or Terang, plus 5 accent colours.
-- **Starts with Windows**; turn it off in the menu.
+- **Starts with Windows**; turn it off in the menu. The menu shows when Windows' own *Startup apps* switch has turned it off.
 - **Updates:**
   - The app checks once a week; *Kemas kini → Semak sekarang* checks right away.
   - Clicking **"Versi X tersedia"** downloads the new exe from this repo's release, verifies it, swaps it in, restarts, and **removes the old version**.
@@ -51,6 +51,14 @@ Updates installed by the app itself don't show this warning. On a managed work l
 Right-click the widget or the tray icon for the menu: Zon, Peringatan, Bunyi, Tema, Susun atur, and so on. The location and hide buttons appear when you hover over the widget.
 
 If the footer says **"≈ Anggaran"**, JAKIM data couldn't be downloaded yet and the times are calculated. Don't rely on those for Subuh. The menu shows the reason.
+
+## Not starting with Windows?
+Right-click the widget and check **Mula bersama Windows**:
+- **Ticked:** it's registered. If it still doesn't appear after you sign in, look for the 🌙 icon under the taskbar's **^**, and check `%APPDATA%\WaktuSolat\error.log`.
+- **"dimatikan dalam Windows":** it was switched off in Task Manager → Startup apps. Click the item to turn it back on.
+- **"⚠ Fail dalam OneDrive / Downloads":** click it. The app moves itself to `%LOCALAPPDATA%\Programs\WaktuSolat` so Windows can start it before OneDrive has synced.
+
+Turning autostart on also removes the "downloaded from the internet" mark from the app's own exe, the same as Properties → *Unblock*, so SmartScreen can't stop it at sign-in. Work laptops may block startup apps by policy; ask IT if none of the above helps.
 
 ## Security & privacy
 - **Network:** HTTPS only, to:

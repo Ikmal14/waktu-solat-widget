@@ -18,11 +18,14 @@ namespace WaktuSolat
         static void Main(string[] args)
         {
             bool updated = args.Contains("--updated");
+            int mi = Array.IndexOf(args, "--moved-from");
+            string movedFrom = mi >= 0 && mi + 1 < args.Length ? args[mi + 1] : null;
+            bool wait = updated || movedFrom != null;   // the previous copy may still be closing
             using (var mutex = new Mutex(false, @"Local\WaktuSolat-SingleInstance"))
             {
                 bool owned;
                 // After a self-update the old process may still be closing: wait for it instead of quitting.
-                try { owned = mutex.WaitOne(updated ? 20000 : 0); } catch (AbandonedMutexException) { owned = true; }
+                try { owned = mutex.WaitOne(wait ? 20000 : 0); } catch (AbandonedMutexException) { owned = true; }
                 if (!owned) return;   // already running (see tray)
                 try
                 {
@@ -31,7 +34,8 @@ namespace WaktuSolat
                     Application.ThreadException += (s, e) => Log(e.Exception);
                     AppDomain.CurrentDomain.UnhandledException += (s, e) => Log(e.ExceptionObject as Exception);
                     SelfUpdate.CleanupOldVersion();
-                    Application.Run(new TrayApp(updated));
+                    if (movedFrom != null) AppHome.RemoveOldCopy(movedFrom);
+                    Application.Run(new TrayApp(updated, movedFrom != null));
                 }
                 finally { mutex.ReleaseMutex(); }
             }
@@ -60,7 +64,6 @@ namespace WaktuSolat
         public bool ZoneAuto = true;
         public int Remind = 30;
         public int X = int.MinValue, Y = int.MinValue, W, H;
-        public bool Visible = true;
         public bool Dhuha = true;           // Dhuha start/end notices
         public bool StartNotice = true;     // popup when a waktu begins
         public bool Sound = true;           // Windows notification sounds
@@ -70,14 +73,14 @@ namespace WaktuSolat
         public string UpdateVersion, UpdateUrl;   // newer release found (validated)
         public int ThemeMode;               // 0 follow Windows, 1 dark, 2 light
         public int Accent;                  // index into Theme.Accents
-        public bool FirstRun;
+        public bool AutostartInit;          // autostart was set up once (v5.1.1+); older settings get it enabled once
 
         static string FilePath => Path.Combine(Program.DataDir, "settings.ini");
 
         public static Settings Load()
         {
             var s = new Settings();
-            if (!File.Exists(FilePath)) { s.FirstRun = true; return s; }
+            if (!File.Exists(FilePath)) return s;
             try
             {
                 foreach (var line in File.ReadAllLines(FilePath))
@@ -95,7 +98,7 @@ namespace WaktuSolat
                         case "y": s.Y = n; break;
                         case "w": s.W = Math.Max(0, Math.Min(n, 4000)); break;
                         case "h": s.H = Math.Max(0, Math.Min(n, 4000)); break;
-                        case "visible": s.Visible = v != "0"; break;
+                        case "autostartInit": s.AutostartInit = v == "1"; break;
                         case "dhuha": s.Dhuha = v != "0"; break;
                         case "startNotice": s.StartNotice = v != "0"; break;
                         case "sound": s.Sound = v != "0"; break;
@@ -121,7 +124,7 @@ namespace WaktuSolat
                 File.WriteAllLines(FilePath, new[]
                 {
                     "zone=" + Zone, "zoneAuto=" + (ZoneAuto ? 1 : 0), "remind=" + Remind,
-                    "x=" + X, "y=" + Y, "w=" + W, "h=" + H, "visible=" + (Visible ? 1 : 0),
+                    "x=" + X, "y=" + Y, "w=" + W, "h=" + H, "autostartInit=" + (AutostartInit ? 1 : 0),
                     "dhuha=" + (Dhuha ? 1 : 0), "theme=" + ThemeMode, "accent=" + Accent,
                     "startNotice=" + (StartNotice ? 1 : 0), "sound=" + (Sound ? 1 : 0),
                     "updateCheck=" + (UpdateCheck ? 1 : 0), "lastUpdate=" + LastUpdateUtc.Ticks, "lastUpdateOk=" + (LastUpdateOk ? 1 : 0),
@@ -135,21 +138,132 @@ namespace WaktuSolat
     // ---------------------------------------------------------------- start with Windows (per-user, no admin)
     static class Autostart
     {
-        const string Key = @"Software\Microsoft\Windows\CurrentVersion\Run", Name = "WaktuSolat";
-        static string Command => "\"" + Application.ExecutablePath + "\"";
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+        const string Name = "WaktuSolat";
+        static string Command(string exe) => "\"" + exe + "\"";
 
-        public static bool Enabled
+        public enum State { Off, On, DisabledByWindows }
+
+        public static State Current
         {
-            get { using (var k = Registry.CurrentUser.OpenSubKey(Key)) return k?.GetValue(Name) != null; }
-            set
+            get
             {
-                using (var k = Registry.CurrentUser.CreateSubKey(Key))
-                    if (value) k.SetValue(Name, Command); else k.DeleteValue(Name, false);
+                using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) if (k?.GetValue(Name) == null) return State.Off;
+                return DisabledInWindows() ? State.DisabledByWindows : State.On;
             }
         }
 
-        /// Keep the path correct if the exe was moved.
-        public static void Sync() { try { if (Enabled) Enabled = true; } catch { } }
+        // Task Manager / Settings → Startup apps keep their on/off switch here (first byte odd = turned off).
+        static bool DisabledInWindows()
+        {
+            try { using (var k = Registry.CurrentUser.OpenSubKey(ApprovedKey)) return k?.GetValue(Name) is byte[] b && b.Length > 0 && (b[0] & 1) == 1; }
+            catch { return false; }
+        }
+
+        /// User choice "on": register this exe, clear Windows' off-switch for this entry, and unblock the file
+        /// so SmartScreen can't stop it at sign-in (before the network is up).
+        public static void Enable(string exe = null)
+        {
+            exe = exe ?? Application.ExecutablePath;
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKey)) k.SetValue(Name, Command(exe));
+            try { using (var k = Registry.CurrentUser.OpenSubKey(ApprovedKey, true)) k?.DeleteValue(Name, false); } catch { }
+            Unblock(exe);
+        }
+
+        public static void Disable()
+        {
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKey)) k.DeleteValue(Name, false);
+        }
+
+        /// Every start: keep the registered path current (exe moved or replaced) and the file unblocked.
+        /// Never overrides an off-switch the user set in Windows.
+        public static void Sync()
+        {
+            try
+            {
+                using (var k = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                {
+                    if (k?.GetValue(Name) == null) return;
+                    var want = Command(Application.ExecutablePath);
+                    if (!string.Equals(k.GetValue(Name) as string, want, StringComparison.OrdinalIgnoreCase)) k.SetValue(Name, want);
+                }
+                Unblock(Application.ExecutablePath);
+            }
+            catch { }
+        }
+
+        /// Same as Properties → "Unblock": removes the "downloaded from the internet" mark from this app's own exe only.
+        public static void Unblock(string exe) { try { DeleteFile(exe + ":Zone.Identifier"); } catch { } }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        static extern bool DeleteFile(string path);
+    }
+
+    // ---------------------------------------------------------------- app folder (avoid OneDrive / Downloads at sign-in)
+    static class AppHome
+    {
+        public static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "WaktuSolat");
+        public static string Exe => Path.Combine(Dir, "WaktuSolat.exe");
+
+        static bool Same(string a, string b) => string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
+
+        /// A folder from which Windows may fail to start the app at sign-in, or null if the location is fine.
+        public static string RiskyLocation()
+        {
+            try
+            {
+                var p = Application.ExecutablePath;
+                if (Same(p, Exe)) return null;
+                foreach (var v in new[] { "OneDrive", "OneDriveCommercial", "OneDriveConsumer" })
+                {
+                    var root = Environment.GetEnvironmentVariable(v);
+                    if (!string.IsNullOrEmpty(root) && p.StartsWith(root.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)) return "OneDrive";
+                }
+                uint a = GetFileAttributes(p);   // cloud placeholder (online-only / recall on open)
+                if (a != uint.MaxValue && (a & (0x400000u | 0x40000u | 0x1000u)) != 0) return "OneDrive";
+                if (p.IndexOf(@"\Downloads\", StringComparison.OrdinalIgnoreCase) >= 0) return "Downloads";
+                if (p.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase)) return "Temp";
+            }
+            catch { }
+            return null;
+        }
+
+        /// Copy this exe to %LOCALAPPDATA%\Programs\WaktuSolat, start it there with autostart pointing to it.
+        /// The new copy removes the old one once this process has closed.
+        public static void MoveHere()
+        {
+            var src = Application.ExecutablePath;
+            Directory.CreateDirectory(Dir);
+            var tmp = Exe + ".new";
+            File.Copy(src, tmp, true);
+            if (File.Exists(Exe)) File.Delete(Exe);
+            File.Move(tmp, Exe);
+            Autostart.Enable(Exe);
+            Process.Start(new ProcessStartInfo(Exe) { Arguments = "--moved-from \"" + src + "\"", UseShellExecute = false, WorkingDirectory = Dir });
+        }
+
+        /// Delete the copy we moved from — only if it really is a Waktu Solat exe and not this one.
+        public static void RemoveOldCopy(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || Same(path, Application.ExecutablePath)) return;
+                if (!File.Exists(path) || FileVersionInfo.GetVersionInfo(path).ProductName != "Waktu Solat") return;
+            }
+            catch { return; }
+            new Thread(() =>
+            {
+                for (int i = 0; i < 30 && File.Exists(path); i++)
+                {
+                    try { File.Delete(path); } catch { }
+                    Thread.Sleep(1000);
+                }
+            }) { IsBackground = true, Name = "RemoveOldCopy" }.Start();
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern uint GetFileAttributes(string path);
     }
 
     // ---------------------------------------------------------------- location (Windows Location; nothing leaves the PC)
@@ -223,17 +337,18 @@ namespace WaktuSolat
         string _locStatus = "";
         bool _locSettingsHint;
 
-        readonly bool _justUpdated;
+        readonly bool _justUpdated, _justMoved;
         bool _installing;
+        DateTime _locationTipAt = DateTime.UtcNow.AddSeconds(20);   // one tip per run if the exe sits in OneDrive/Downloads
 
-        public TrayApp(bool justUpdated = false)
+        public TrayApp(bool justUpdated = false, bool justMoved = false)
         {
-            _justUpdated = justUpdated;
+            _justUpdated = justUpdated; _justMoved = justMoved;
             Theme.Apply((Theme.Mode)_settings.ThemeMode, _settings.Accent);
             _store = new DataStore(Program.DataDir, _settings.Zone);
             _done = new DoneStore(Program.DataDir);
 
-            if (_settings.FirstRun) { try { Autostart.Enabled = true; } catch { } _settings.Save(); }
+            if (!_settings.AutostartInit) { try { Autostart.Enable(); } catch { } _settings.AutostartInit = true; _settings.Save(); }
             else Autostart.Sync();
 
             _widget = new Widget(_menu);
@@ -254,12 +369,13 @@ namespace WaktuSolat
             _timer.Tick += (s, e) => Tick();
             _timer.Start();
             Tick();
-            if (_settings.Visible) _widget.Show();
+            _widget.Show();   // always visible after start/sign-in; "–" hides it until the next start
             if (_justUpdated)
             {
                 _settings.UpdateVersion = null; _settings.UpdateUrl = null; _settings.Save();
                 _notify.Info($"Dikemas kini ke versi {Current.ToString(3)}", "Versi lama telah dibuang.");
             }
+            if (_justMoved) _notify.Info("Dipindahkan ke folder aplikasi", "Waktu Solat akan mula bersama Windows dari sini.");
         }
 
         void OnPower(object sender, PowerModeChangedEventArgs e)
@@ -300,7 +416,6 @@ namespace WaktuSolat
         void SetVisible(bool v)
         {
             if (v) _widget.Show(); else _widget.Hide();
-            _settings.Visible = v; _settings.Save();
         }
 
         void SetLayout(bool horizontal)
@@ -371,6 +486,14 @@ namespace WaktuSolat
                         _notify.Show(null, () => $"Dhuha tamat dalam {Util.Duration(d.DhuhaEnd - Clock.Now)}", () => $"Solat sebelum ~{d.DhuhaEnd:HH:mm} · {zohor}{tag}", null, null, 0, true, Sounds.Default, d.DhuhaEnd, d.DhuhaEnd);
                         break;
                 }
+            }
+
+            if (_locationTipAt != DateTime.MaxValue && DateTime.UtcNow >= _locationTipAt)
+            {
+                _locationTipAt = DateTime.MaxValue;
+                var risky = AppHome.RiskyLocation();
+                if (risky != null)
+                    _notify.Info($"Waktu Solat ada dalam {risky}", "Ia mungkin tidak mula bersama Windows. Klik kanan widget → Pindah ke folder aplikasi.");
             }
 
             ShowUpdateState();
@@ -456,6 +579,12 @@ namespace WaktuSolat
         {
             _settings.LastUpdateUtc = DateTime.MinValue; _settings.LastUpdateOk = false;
             if (!_updateBusy) CheckUpdate();
+        }
+
+        void MoveHome()
+        {
+            try { AppHome.MoveHere(); ExitThread(); }   // the copy in the app folder starts and removes this one
+            catch (Exception ex) { MessageBox.Show("Tidak dapat memindahkan: " + ex.Message, "Waktu Solat"); }
         }
 
         void MarkDone(Entry e)
@@ -587,11 +716,15 @@ namespace WaktuSolat
             layout.DropDownItems.Add(new ToolStripMenuItem("Mendatar", null, (s, e) => SetLayout(true)) { Checked = _widget.Horizontal });
             _menu.Items.Add(layout);
 
-            bool auto = false; try { auto = Autostart.Enabled; } catch { }
-            _menu.Items.Add(new ToolStripMenuItem("Mula bersama Windows", null, (s, e) =>
+            var autoState = Autostart.State.Off; try { autoState = Autostart.Current; } catch { }
+            _menu.Items.Add(new ToolStripMenuItem(autoState == Autostart.State.DisabledByWindows ? "Mula bersama Windows (dimatikan dalam Windows · klik untuk hidupkan)" : "Mula bersama Windows", null, (s, e) =>
             {
-                try { Autostart.Enabled = !auto; } catch (Exception ex) { MessageBox.Show(ex.Message, "Waktu Solat"); }
-            }) { Checked = auto });
+                try { if (autoState == Autostart.State.On) Autostart.Disable(); else Autostart.Enable(); }
+                catch (Exception ex) { MessageBox.Show(ex.Message, "Waktu Solat"); }
+            }) { Checked = autoState == Autostart.State.On });
+            var risky = AppHome.RiskyLocation();
+            if (risky != null)
+                _menu.Items.Add(new ToolStripMenuItem($"⚠ Fail dalam {risky}: pindah ke folder aplikasi (supaya mula bersama Windows)", null, (s, e) => MoveHome()));
 
             // Status (read-only) so problems are visible, not silent.
             _menu.Items.Add(new ToolStripSeparator());
