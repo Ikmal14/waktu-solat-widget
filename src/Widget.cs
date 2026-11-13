@@ -61,7 +61,7 @@ namespace WaktuSolat
         public string UpdateText;      // e.g. "Versi 5.1 tersedia" (null = none)
 
         // Design sizes (before scaling) — 4px grid
-        public static readonly SizeF VerticalSize = new SizeF(232, 304), HorizontalSize = new SizeF(616, 112);
+        public static readonly SizeF VerticalSize = new SizeF(232, 304), HorizontalSize = new SizeF(664, 112);
         const float Pad = 16;
 
         readonly ContextMenuStrip _menu;
@@ -125,6 +125,12 @@ namespace WaktuSolat
 
             var design = Horizontal ? HorizontalSize : VerticalSize;
             _scale = Math.Min(ClientSize.Width / design.Width, ClientSize.Height / design.Height);
+            if (Horizontal)
+            {
+                // Height sets the text size; extra width goes to the columns (so widening shows full names).
+                float byHeight = ClientSize.Height / design.Height;
+                if (design.Width * byHeight <= ClientSize.Width) { _scale = byHeight; design = new SizeF(ClientSize.Width / byHeight, design.Height); }
+            }
             _ox = (ClientSize.Width - design.Width * _scale) / 2;
             _oy = (ClientSize.Height - design.Height * _scale) / 2;
             g.TranslateTransform(_ox, _oy);
