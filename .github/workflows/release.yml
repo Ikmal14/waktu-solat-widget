@@ -58,7 +58,7 @@ jobs:
           $exe = "bin/Release/net48/WaktuSolat.exe"
           $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
           @"
-          **Download ``WaktuSolat.exe`` below**, put it somewhere permanent (e.g. ``Documents\WaktuSolat\``) and run it. Windows 10/11, no install, no admin.
+          **Download ``WaktuSolat.exe`` below**, put it in a local folder OneDrive doesn't sync (e.g. ``%LOCALAPPDATA%\Programs\WaktuSolat\``) and run it. Windows 10/11, no install, no admin.
 
           Updating from v5.1 or later: click **"Versi … tersedia"** in the widget — it downloads, verifies and installs itself, then removes the old version. From v5.0: right-click the tray icon → **Keluar**, replace the exe, run it. Settings are kept.
 

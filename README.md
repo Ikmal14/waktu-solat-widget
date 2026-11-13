@@ -54,7 +54,8 @@ If the footer says **"≈ Anggaran"**, JAKIM data couldn't be downloaded yet and
 
 ## Not starting with Windows?
 Right-click the widget and check **Mula bersama Windows**:
-- **Ticked:** it's registered. If it still doesn't appear after you sign in, look for the 🌙 icon under the taskbar's **^**, and check `%APPDATA%\WaktuSolat\error.log`.
+- **Ticked:** it's registered. If it still doesn't appear after you sign in, look for the 🌙 icon under the taskbar's **^**. Then check `%APPDATA%\WaktuSolat\start.log`, which records each start, including "Windows sign-in", and `error.log`.
+- **"disekat oleh polisi IT":** your organisation blocks startup apps.
 - **"dimatikan dalam Windows":** it was switched off in Task Manager → Startup apps. Click the item to turn it back on.
 - **"⚠ Fail dalam OneDrive / Downloads":** click it. The app moves itself to `%LOCALAPPDATA%\Programs\WaktuSolat` so Windows can start it before OneDrive has synced.
 
@@ -67,7 +68,8 @@ Turning autostart on also removes the "downloaded from the internet" mark from t
   - When you click an update: `github.com/Ikmal14/waktu-solat-widget/releases/download/…` and GitHub's release storage, `release-assets.githubusercontent.com`.
 - **Connections:** certificates are always checked, redirects are re-checked against the allow-list, and responses are size- and time-limited and validated.
 - **Location:** read through Windows, matched to a zone in memory, then discarded. Only the zone code is saved.
-- **Files:** `%APPDATA%\WaktuSolat\` (settings, cache, ticks), plus the exe's own folder during an update. The only registry write is `HKCU\…\Run\WaktuSolat`, for autostart.
+- **Files:** `%APPDATA%\WaktuSolat\` (settings, cache, ticks, a short start log), the exe's own folder during an update, and `%LOCALAPPDATA%\Programs\WaktuSolat\` plus a Start-menu shortcut if you choose to move the app there.
+- **Registry (your user only):** the `Run\WaktuSolat` value for autostart. When *you* turn autostart on, it also clears Windows' Startup-apps off-switch for that entry.
 - **No tracking:** no telemetry, no accounts, no tokens, no admin rights.
 
 ## How Dhuha is timed
