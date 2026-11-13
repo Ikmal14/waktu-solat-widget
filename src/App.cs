@@ -37,8 +37,7 @@ namespace WaktuSolat
                     Application.ThreadException += (s, e) => Log(e.Exception);
                     AppDomain.CurrentDomain.UnhandledException += (s, e) => Log(e.ExceptionObject as Exception);
                     SelfUpdate.CleanupOldVersion();
-                    if (movedFrom != null) AppHome.RemoveOldCopy(movedFrom);
-                    Application.Run(new TrayApp(updated, movedFrom != null));
+                    Application.Run(new TrayApp(updated, movedFrom));
                 }
                 finally { mutex.ReleaseMutex(); }
             }
@@ -207,6 +206,12 @@ namespace WaktuSolat
             try { using (var k = Registry.CurrentUser.OpenSubKey(ApprovedKey, true)) k?.DeleteValue(Name, false); } catch { }
         }
 
+        public static bool PointsTo(string exe)
+        {
+            try { using (var k = Registry.CurrentUser.OpenSubKey(RunKey)) return string.Equals(k?.GetValue(Name) as string, Command(exe), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+
         public static void Disable()
         {
             using (var k = Registry.CurrentUser.CreateSubKey(RunKey)) k.DeleteValue(Name, false);
@@ -314,8 +319,8 @@ namespace WaktuSolat
                 var tmp = Exe + ".new";
                 File.Copy(src, tmp, true);
                 Autostart.Unblock(tmp);
-                if (File.Exists(Exe)) File.Delete(Exe);
-                File.Move(tmp, Exe);
+                if (File.Exists(Exe)) File.Replace(tmp, Exe, null);   // atomic: never leaves the folder without an exe
+                else File.Move(tmp, Exe);
             }
             try
             {
@@ -451,14 +456,21 @@ namespace WaktuSolat
         bool _installing;
         DateTime _locationTipAt = DateTime.UtcNow.AddSeconds(20);   // one tip per run if the exe sits in OneDrive/Downloads
 
-        public TrayApp(bool justUpdated = false, bool justMoved = false)
+        readonly string _movedFrom;
+
+        public TrayApp(bool justUpdated = false, string movedFrom = null)
         {
-            _justUpdated = justUpdated; _justMoved = justMoved;
+            _justUpdated = justUpdated; _justMoved = movedFrom != null; _movedFrom = movedFrom;
             Theme.Apply((Theme.Mode)_settings.ThemeMode, _settings.Accent);
             _store = new DataStore(Program.DataDir, _settings.Zone);
             _done = new DoneStore(Program.DataDir);
 
-            if (_justMoved) { try { Autostart.Enable(); } catch { } _settings.AutostartInit = true; _settings.Save(); }   // user chose "move so it starts with Windows"
+            if (_justMoved)   // user chose "move so it starts with Windows"
+            {
+                try { Autostart.Enable(); } catch { }
+                _settings.AutostartInit = true; _settings.Save();
+                if (Autostart.PointsTo(Application.ExecutablePath)) AppHome.RemoveOldCopy(_movedFrom);   // only once autostart is switched
+            }
             else if (!_settings.AutostartInit) { try { Autostart.Register(); } catch { } _settings.AutostartInit = true; _settings.Save(); }
             else Autostart.Sync();
 
@@ -486,7 +498,10 @@ namespace WaktuSolat
                 _settings.UpdateVersion = null; _settings.UpdateUrl = null; _settings.Save();
                 _notify.Info($"Dikemas kini ke versi {Current.ToString(3)}", "Versi lama telah dibuang.");
             }
-            if (_justMoved) _notify.Info("Dipindahkan ke folder aplikasi", "Akan mula bersama Windows. Cari \"Waktu Solat\" di menu Start.");
+            if (_justMoved)
+                _notify.Info("Dipindahkan ke folder aplikasi", Autostart.Current == Autostart.State.On
+                    ? "Akan mula bersama Windows. Cari \"Waktu Solat\" di menu Start."
+                    : "Cari \"Waktu Solat\" di menu Start. Mula bersama Windows tidak aktif (lihat menu).");
         }
 
         void OnPower(object sender, PowerModeChangedEventArgs e)
@@ -604,7 +619,7 @@ namespace WaktuSolat
                 _locationTipAt = DateTime.MaxValue;
                 var risky = AppHome.RiskyLocation();
                 var exe = Application.ExecutablePath;
-                bool wanted = false; try { wanted = Autostart.Current != Autostart.State.Off; } catch { }
+                bool wanted = false; try { var c = Autostart.Current; wanted = c == Autostart.State.On || c == Autostart.State.DisabledByWindows; } catch { }
                 if (risky != null && wanted && !string.Equals(_settings.TipShownFor, exe, StringComparison.OrdinalIgnoreCase))
                 {
                     _notify.Info($"Waktu Solat ada dalam {risky}", "Ia mungkin tidak mula bersama Windows. Klik kanan widget → Pindah ke folder aplikasi.");
@@ -834,12 +849,12 @@ namespace WaktuSolat
 
             var autoState = Autostart.State.Off; try { autoState = Autostart.Current; } catch { }
             string autoText = autoState == Autostart.State.DisabledByWindows ? "Mula bersama Windows (dimatikan dalam Windows · klik untuk hidupkan)"
-                            : autoState == Autostart.State.BlockedByPolicy ? "Mula bersama Windows (disekat oleh polisi IT)" : "Mula bersama Windows";
+                            : autoState == Autostart.State.BlockedByPolicy ? "Mula bersama Windows (disekat oleh polisi IT · klik untuk matikan)" : "Mula bersama Windows";
             _menu.Items.Add(new ToolStripMenuItem(autoText, null, (s, e) =>
             {
-                try { if (autoState == Autostart.State.On) Autostart.Disable(); else Autostart.Enable(); }
+                try { if (autoState == Autostart.State.On || autoState == Autostart.State.BlockedByPolicy) Autostart.Disable(); else Autostart.Enable(); }
                 catch (Exception ex) { MessageBox.Show(ex.Message, "Waktu Solat"); }
-            }) { Checked = autoState == Autostart.State.On, Enabled = autoState != Autostart.State.BlockedByPolicy });
+            }) { Checked = autoState == Autostart.State.On });
             var risky = AppHome.RiskyLocation();
             if (risky != null)
                 _menu.Items.Add(new ToolStripMenuItem($"⚠ Fail dalam {risky}: pindah ke folder aplikasi (supaya mula bersama Windows)", null, (s, e) => MoveHome()));
