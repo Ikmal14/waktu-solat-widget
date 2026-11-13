@@ -643,13 +643,16 @@ namespace WaktuSolat
         void ShowUpdateState() => _widget.UpdateText =
             _installing ? "Memuat turun kemas kini…" : UpdateAvailable ? $"Versi {_settings.UpdateVersion} tersedia · klik untuk kemas kini" : null;
 
-        void CheckUpdate()
+        string _updateError;   // last check failure, shown in the menu
+
+        void CheckUpdate(bool manual = false)
         {
             _updateBusy = true;
             new Thread(() =>
             {
                 Updates.Release rel = null; bool ok;
-                try { rel = Updates.Check(); ok = true; } catch { ok = false; }
+                string err = null;
+                try { rel = Updates.Check(); ok = true; } catch (Exception ex) { ok = false; err = ex.Message; }
                 try
                 {
                     _widget.BeginInvoke((Action)(() =>
@@ -663,7 +666,11 @@ namespace WaktuSolat
                             _settings.UpdateUrl = newer ? rel.Url : null;
                         }
                         _settings.Save();
+                        _updateError = ok ? null : err;
                         ShowUpdateState(); _widget.ForceRepaint();
+                        if (manual)   // a check the user asked for always answers
+                            _notify.Info(!ok ? "Semakan kemas kini gagal" : UpdateAvailable ? $"Versi {_settings.UpdateVersion} tersedia" : "Tiada kemas kini",
+                                         !ok ? Short(err ?? "") + " (api.github.com)" : UpdateAvailable ? "Klik notis dalam widget untuk kemas kini." : $"Anda menggunakan versi terkini (v{Current.ToString(3)}).");
                     }));
                 }
                 catch { }
@@ -709,7 +716,7 @@ namespace WaktuSolat
         void CheckUpdateNow()
         {
             _settings.LastUpdateUtc = DateTime.MinValue; _settings.LastUpdateOk = false;
-            if (!_updateBusy) CheckUpdate();
+            if (!_updateBusy) CheckUpdate(manual: true);
         }
 
         void MoveHome()
@@ -868,6 +875,7 @@ namespace WaktuSolat
             _menu.Items.Add(new ToolStripMenuItem("Muat turun semula data JAKIM", null, (s, e) => _store.Refresh()));
             var upd = new ToolStripMenuItem($"Kemas kini (v{Current.ToString(3)})");
             upd.DropDownItems.Add(new ToolStripMenuItem("Semak sekarang", null, (s, e) => CheckUpdateNow()) { Enabled = !_updateBusy && !_installing });
+            if (_updateError != null) upd.DropDownItems.Add(Info("Semakan terakhir gagal: " + Short(_updateError)));
             upd.DropDownItems.Add(new ToolStripMenuItem("Semak seminggu sekali", null,
                 (s, e) => { _settings.UpdateCheck = !_settings.UpdateCheck; _settings.Save(); }) { Checked = _settings.UpdateCheck });
             _menu.Items.Add(upd);

@@ -9,7 +9,7 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Product>Waktu Solat</Product>
-    <Version>5.1.1</Version>
+    <Version>5.1.2</Version>
     <Deterministic>true</Deterministic>
     <DebugType>none</DebugType>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
